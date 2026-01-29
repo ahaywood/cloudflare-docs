@@ -44,4 +44,64 @@ url.search      // "?query=value"
 url.searchParams.get("query") // "value"
 ```
 
-### Cloudflare Pr
+### Cloudflare Properties
+```javascript
+// Access Cloudflare-specific data via request.cf
+request.cf.country          // "US", "GB", etc.
+request.cf.botManagement.score    // 0-99 bot score
+request.cf.botManagement.verifiedBot // true/false
+request.cf.botManagement.ja4       // JA4 fingerprint
+
+// Zone information
+request.cf.zone.name        // zone name
+request.cf.zone.id          // zone ID
+```
+
+### Environment Variables
+```javascript
+// Access environment variables
+env.MY_VARIABLE    // defined in dashboard or API
+env.DB_PASSWORD    // secrets stored securely
+```
+
+### API Operations
+```bash
+# List all snippets
+GET /zones/{zone_id}/snippets
+
+# Create/update snippet  
+PUT /zones/{zone_id}/snippets/{snippet_name}
+Content-Type: multipart/form-data
+files: @snippet.js
+metadata: {"main_module": "snippet.js"}
+
+# Create snippet rule
+PUT /zones/{zone_id}/snippets/snippet_rules
+{
+  "rules": [{
+    "description": "Run on homepage",
+    "enabled": true,
+    "expression": "(http.request.uri.path eq \"/\")",
+    "snippet_name": "my_snippet"
+  }]
+}
+
+# Delete snippet
+DELETE /zones/{zone_id}/snippets/{snippet_name}
+```
+
+### Error Handling
+```javascript
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      // Your snippet logic
+      return new Response("Success");
+    } catch (error) {
+      console.error("Snippet error:", error);
+      // Fail open - continue to origin
+      return fetch(request);
+    }
+  }
+}
+```

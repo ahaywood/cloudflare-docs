@@ -31,6 +31,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Configure git bot identity
+        if: steps.check.outputs.result == 'true'
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - uses: anomalyco/opencode/github@latest
         if: steps.check.outputs.result == 'true'
         env:

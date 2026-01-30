@@ -43,9 +43,118 @@ https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook \
 }
 ```
 
+## Testing webhooks
+
+Testing webhooks during development requires special consideration since webhooks are sent to publicly accessible URLs.
+
+### Important timing considerations
+
+:::caution
+
+Webhooks are **only sent AFTER video processing completes**, not immediately when a video is uploaded or registered. This means:
+
+* You will not receive a webhook immediately after calling the upload API
+* You must wait for the video to finish processing (typically a few seconds to several minutes depending on video size and complexity)
+* The webhook will be sent when the video reaches either `ready` or `error` state
+
+:::
+
+### Local development with tunneling tools
+
+To test webhooks on your local development environment, you need to expose your local server to the internet using a tunneling tool:
+
+#### Using ngrok
+
+[ngrok](https://ngrok.com/) creates a secure tunnel to your localhost:
+
+1. Install ngrok and start your local webhook handler (for example, on port 3000)
+2. Create a tunnel: `ngrok http 3000`
+3. Copy the HTTPS forwarding URL (for example, `https://abc123.ngrok.io`)
+4. Subscribe to webhooks using this URL:
+
+```bash
+curl -X PUT --header 'Authorization: Bearer <API_TOKEN>' \
+https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook \
+--data '{"notificationUrl":"https://abc123.ngrok.io/webhook"}'
+```
+
+#### Using localtunnel
+
+[localtunnel](https://localtunnel.github.io/www/) is an alternative tunneling solution:
+
+```bash
+npx localtunnel --port 3000
+```
+
+This will provide a public URL that forwards to your local server.
+
+#### Other tunneling options
+
+* **Cloudflare Tunnel** – Use [Cloudflare Tunnel](/cloudflare-one/connections/connect-networks/) to expose your local development server
+* **VS Code Port Forwarding** – If using GitHub Codespaces or VS Code Remote, you can use built-in port forwarding features
+
+### Testing with webhook inspection services
+
+If you want to inspect webhook payloads without setting up local development, use these services:
+
+* **[webhook.site](https://webhook.site/)** – Provides a unique URL and displays all incoming webhook requests in real-time with full payload inspection
+* **[requestbin.com](https://requestbin.com/)** – Similar service for inspecting and debugging webhook payloads
+* **[Pipedream](https://pipedream.com/)** – Allows you to inspect webhooks and write custom handler logic
+
+These services are useful for:
+* Understanding the exact payload structure
+* Verifying webhook delivery
+* Testing signature verification logic before implementing in your application
+
+### Triggering test webhooks
+
+To trigger an actual webhook, you need to upload and process a video:
+
+1. **Upload a test video** using the Stream API or dashboard
+2. **Wait for processing to complete** – Monitor the video status or wait for the webhook
+3. **Use small test videos** – Smaller videos (under 10MB) process faster, making testing quicker
+
+Example test video upload:
+
+```bash
+curl -X POST \
+-H "Authorization: Bearer <API_TOKEN>" \
+-F file=@/path/to/test-video.mp4 \
+https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream
+```
+
+### Troubleshooting common issues
+
+#### Webhook not received
+
+* **Video still processing** – Check if the video has finished processing by querying the video status via the API
+* **Invalid URL** – Ensure your webhook URL is publicly accessible and uses `http://` or `https://`
+* **Firewall blocking** – Verify that your server/firewall allows incoming connections from Cloudflare
+* **Tunnel expired** – Some tunneling services (like ngrok free tier) have session time limits
+
+#### Testing signature verification
+
+When testing locally, make sure to:
+* Store the webhook `secret` from the API response
+* Implement signature verification using the `Webhook-Signature` header
+* Test with actual webhook deliveries to ensure your verification logic is correct
+
+#### Checking webhook delivery
+
+To verify your webhook subscription is active:
+
+```bash
+curl -X GET --header 'Authorization: Bearer <API_TOKEN>' \
+https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook
+```
+
+This returns your current webhook configuration including the notification URL.
+
 ## Notifications
 
 When a video on your account finishes processing, you will receive a `POST` request notification with information about the video.
+
+### Successful encoding example
 
 ```json title="Example POST request body sent in response to successful encoding"
 {
@@ -90,42 +199,136 @@ When a video on your account finishes processing, you will receive a `POST` requ
 }
 ```
 
-* `uid` – The video's unique identifier.
-* `readytoStream` – Returns `true` when at least one quality level is encoded and ready to be streamed.
-* `status` – The processing status.
-  * `state` – Returns `ready` when a video is done processing and all quality levels are encoded.
-  * `pctComplete` – The percentage of processing that is complete. When this reaches `100`, all quality levels are available.
+### Error state example
+
+When video processing fails, the webhook payload will indicate an error state:
+
+```json title="Example POST request body for failed encoding"
+{
+ "uid": "7c8f79c18deef9dd3e227f5d62e8b968",
+ "creator": null,
+ "thumbnail": "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/7c8f79c18deef9dd3e227f5d62e8b968/thumbnails/thumbnail.jpg",
+ "thumbnailTimestampPct": 0,
+ "readyToStream": false,
+ "status": {
+   "state": "error",
+   "step": "encoding",
+   "pctComplete": "39",
+   "errorReasonCode": "ERR_MALFORMED_VIDEO",
+   "errorReasonText": "The video was deemed to be corrupted or malformed."
+ },
+ "meta": {
+   "filename": "corrupted.mp4",
+   "filetype": "video/mp4",
+   "name": "corrupted.mp4",
+   "relativePath": "null",
+   "type": "video/mp4"
+ },
+ "created": "2022-06-30T18:00:00.000000Z",
+ "modified": "2022-06-30T18:00:15.000000Z",
+ "size": 500000,
+ "preview": "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/7c8f79c18deef9dd3e227f5d62e8b968/watch",
+ "allowedOrigins": [],
+ "requireSignedURLs": false,
+ "uploaded": "2022-06-30T18:00:00.000000Z",
+ "uploadExpiry": null,
+ "maxSizeBytes": null,
+ "maxDurationSeconds": null,
+ "duration": -1,
+ "input": {
+   "width": -1,
+   "height": -1
+ },
+ "playback": {
+   "hls": "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/7c8f79c18deef9dd3e227f5d62e8b968/manifest/video.m3u8",
+   "dash": "https://customer-f33zs165nr7gyfy4.cloudflarestream.com/7c8f79c18deef9dd3e227f5d62e8b968/manifest/video.mpd"
+ },
+ "watermark": null
+}
+```
+
+### Webhook payload field reference
+
+The following table describes all fields in the webhook payload:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uid` | string | The unique identifier for the video. This is the primary ID used to reference the video in API calls and is generated automatically when a video is uploaded. |
+| `creator` | string \| null | The creator ID if the video was uploaded via a creator upload token. Returns `null` for videos uploaded directly to the account. |
+| `thumbnail` | string | URL to the auto-generated thumbnail image for the video. You can customize which frame is used as the thumbnail. |
+| `thumbnailTimestampPct` | number | The percentage position in the video (0-100) where the thumbnail was captured. `0` means the first frame. |
+| `readyToStream` | boolean | **Critical field**: Returns `true` when at least one quality level is encoded and ready to be streamed. Check this field before allowing playback. |
+| `status` | object | Object containing the processing status details. |
+| `status.state` | string | Current state of the video. Values: `pendingupload`, `downloading`, `queued`, `inprogress`, `ready`, or `error`. |
+| `status.pctComplete` | string | Percentage of processing completed as a string decimal (for example, `"39.000000"`). Reaches `"100.000000"` when all quality levels are available. |
+| `status.step` | string | (Error state only) The processing step where the error occurred (for example, `encoding`). |
+| `status.errorReasonCode` | string | Error code if processing failed. Empty string if successful. See [Error codes](#error-codes) for possible values. |
+| `status.errorReasonText` | string | Human-readable error message if processing failed. Empty string if successful. |
+| `meta` | object | Metadata about the uploaded file. |
+| `meta.filename` | string | The original filename of the uploaded file. |
+| `meta.filetype` | string | The MIME type of the uploaded file (for example, `video/mp4`). |
+| `meta.name` | string | Display name for the video. Defaults to the filename but can be customized via API. |
+| `meta.relativePath` | string | Relative path if the video was uploaded as part of a folder structure. Usually `"null"` for single file uploads. |
+| `meta.type` | string | The MIME type of the video (same as `filetype`). |
+| `created` | string | ISO 8601 timestamp indicating when the video record was created in Stream. |
+| `modified` | string | ISO 8601 timestamp indicating when the video record was last modified. |
+| `size` | number | Size of the uploaded video file in bytes. |
+| `preview` | string | URL to the Stream player page for previewing the video. |
+| `allowedOrigins` | array | Array of domains allowed to embed this video. Empty array means no domain restrictions. |
+| `requireSignedURLs` | boolean | Whether signed URLs are required to play this video. When `true`, videos can only be viewed with a valid signed token. |
+| `uploaded` | string | ISO 8601 timestamp indicating when the video file was uploaded to Stream. |
+| `uploadExpiry` | string \| null | ISO 8601 timestamp indicating when a direct creator upload URL expires. `null` for videos uploaded directly. |
+| `maxSizeBytes` | number \| null | Maximum file size constraint (in bytes) if set during direct creator upload. `null` if no constraint. |
+| `maxDurationSeconds` | number \| null | Maximum video duration constraint (in seconds) if set during direct creator upload. `null` if no constraint. |
+| `duration` | number | Video duration in seconds. Returns `-1` if the video failed to process. |
+| `input` | object | Original video dimensions. |
+| `input.width` | number | Original video width in pixels. Returns `-1` if the video failed to process. |
+| `input.height` | number | Original video height in pixels. Returns `-1` if the video failed to process. |
+| `playback` | object | URLs for streaming playback. |
+| `playback.hls` | string | URL to the HLS manifest file (`.m3u8`) for HTTP Live Streaming playback. |
+| `playback.dash` | string | URL to the DASH manifest file (`.mpd`) for Dynamic Adaptive Streaming over HTTP playback. |
+| `watermark` | object \| null | Watermark configuration if a watermark has been applied to the video. `null` if no watermark. |
+
+### Key field explanations
+
+* **`uid`** – This is the video's unique identifier that you'll use in all API operations. Think of it as the video's permanent ID in the Stream system.
+
+* **`readyToStream`** – Always check this field before enabling playback. It returns `true` when at least one quality level is encoded and ready to be streamed, even if all quality levels aren't finished yet.
+
+* **`status.state` and `status.pctComplete`** – These fields work together to indicate processing progress:
+  * `state: "ready"` means the video has finished processing
+  * `pctComplete: "100.000000"` means all quality levels are available
+
   :::tip
-	If you want to ensure the highest picture quality, enable video playback only when `state` is `ready` and `pctComplete` is `100`.
+  If you want to ensure the highest picture quality, enable video playback only when `state` is `ready` AND `pctComplete` is `"100.000000"`.
   :::
-* `meta` – Metadata associated with the uploaded file.
-* `created` – Timestamp indicating when the video record was created.
+
+* **`meta`** – Contains metadata associated with the uploaded file, including the original filename and MIME type. You can use this to display information about the video in your application.
+
+* **`created` vs `uploaded`** – Both are timestamps but serve different purposes:
+  * `created` – When the video record was created in the Stream system
+  * `uploaded` – When the actual video file upload completed
+
+  These are usually very close together but may differ slightly.
 
 ## Error codes
 
-If a video could not process successfully, the `state` field returns `error`, and the `errReasonCode` returns one of the values listed below.
+If a video could not process successfully, the `status.state` field returns `error`, and the `status.errorReasonCode` field returns one of the values listed below:
 
-* `ERR_NON_VIDEO` – The upload is not a video.
-* `ERR_DURATION_EXCEED_CONSTRAINT` – The video duration exceeds the constraints defined in the direct creator upload.
-* `ERR_FETCH_ORIGIN_ERROR` – The video failed to download from the URL.
-* `ERR_MALFORMED_VIDEO` – The video is a valid file but contains corrupt data that cannot be recovered.
-* `ERR_DURATION_TOO_SHORT` – The video's duration is shorter than 0.1 seconds.
-* `ERR_UNKNOWN` – If Stream cannot automatically determine why the video returned an error, the `ERR_UNKNOWN` code will be used.
+| Error Code | Description |
+|------------|-------------|
+| `ERR_NON_VIDEO` | The upload is not a video file. The file may be an image, audio file, or other non-video format. |
+| `ERR_DURATION_EXCEED_CONSTRAINT` | The video duration exceeds the `maxDurationSeconds` constraint defined in the direct creator upload. |
+| `ERR_FETCH_ORIGIN_ERROR` | The video failed to download from the provided URL. This can occur with URL-based uploads when the source is unavailable or inaccessible. |
+| `ERR_MALFORMED_VIDEO` | The video is a valid file format but contains corrupt data that cannot be recovered. The file may be partially corrupted or have encoding issues. |
+| `ERR_DURATION_TOO_SHORT` | The video's duration is shorter than 0.1 seconds, which is below the minimum required length. |
+| `ERR_UNKNOWN` | Stream cannot automatically determine why the video returned an error. Check the `errorReasonText` field for additional details. |
 
-In addition to the `state` field, a video's `readyToStream` field must also be `true` for a video to play.
+:::note
 
-```bash title="Example error response" {2,4,7}
-{
-  "readyToStream": false,
-  "status": {
-    "state": "error",
-    "step": "encoding",
-    "pctComplete": "39",
-    "errReasonCode": "ERR_MALFORMED_VIDEO",
-    "errReasonText": "The video was deemed to be corrupted or malformed.",
-  }
-}
-```
+In addition to checking the `status.state` field for errors, always verify that the video's `readyToStream` field is `true` before allowing playback. A video must have both `readyToStream: true` and `status.state: "ready"` to be playable.
+
+:::
 
 ## Verify webhook authenticity
 

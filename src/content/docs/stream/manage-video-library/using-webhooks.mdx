@@ -90,16 +90,45 @@ When a video on your account finishes processing, you will receive a `POST` requ
 }
 ```
 
-* `uid` – The video's unique identifier.
-* `readytoStream` – Returns `true` when at least one quality level is encoded and ready to be streamed.
-* `status` – The processing status.
-  * `state` – Returns `ready` when a video is done processing and all quality levels are encoded.
+### Webhook payload fields
+
+* `uid` – The video's unique identifier used to reference this video in API calls.
+* `creator` – The creator ID if the video was uploaded via creator uploads, otherwise `null`.
+* `thumbnail` – URL to the automatically generated thumbnail image for the video.
+* `thumbnailTimestampPct` – The percentage of the video duration where the thumbnail was captured (0 = start, 100 = end).
+* `readyToStream` – Returns `true` when at least one quality level is encoded and ready to be streamed.
+* `status` – The processing status object containing:
+  * `state` – Current processing state. Values: `pendingupload`, `downloading`, `queued`, `inprogress`, `ready`, or `error`.
   * `pctComplete` – The percentage of processing that is complete. When this reaches `100`, all quality levels are available.
+  * `errorReasonCode` – Error code if processing failed (see error codes section below).
+  * `errorReasonText` – Human-readable error description if processing failed.
   :::tip
 	If you want to ensure the highest picture quality, enable video playback only when `state` is `ready` and `pctComplete` is `100`.
   :::
-* `meta` – Metadata associated with the uploaded file.
-* `created` – Timestamp indicating when the video record was created.
+* `meta` – Metadata associated with the uploaded file, including:
+  * `filename` – Original filename of the uploaded file.
+  * `filetype` – MIME type of the original file.
+  * `name` – Display name for the video.
+  * `relativePath` – Path information if uploaded as part of a batch.
+  * `type` – Content type of the video file.
+* `created` – ISO 8601 timestamp indicating when the video record was created.
+* `modified` – ISO 8601 timestamp indicating when the video record was last modified.
+* `size` – Size of the original video file in bytes.
+* `preview` – URL to the Cloudflare Stream player for this video.
+* `allowedOrigins` – Array of domains allowed to embed this video (empty array means all domains allowed).
+* `requireSignedURLs` – Boolean indicating if signed URLs are required to access this video.
+* `uploaded` – ISO 8601 timestamp indicating when the video upload completed.
+* `uploadExpiry` – ISO 8601 timestamp indicating when the upload URL expires (for direct creator uploads).
+* `maxSizeBytes` – Maximum allowed file size in bytes (if set during upload).
+* `maxDurationSeconds` – Maximum allowed video duration in seconds (if set during upload).
+* `duration` – Video duration in seconds.
+* `input` – Object containing the original video dimensions:
+  * `width` – Original video width in pixels.
+  * `height` – Original video height in pixels.
+* `playback` – Object containing streaming URLs:
+  * `hls` – HLS manifest URL for adaptive streaming.
+  * `dash` – DASH manifest URL for adaptive streaming.
+* `watermark` – Watermark configuration object if watermarks are applied, otherwise `null`.
 
 ## Error codes
 
@@ -170,85 +199,558 @@ Compare the signature in the request header to the expected signature. Preferabl
 
 If the signatures match, you can trust that Cloudflare sent the webhook.
 
+## Testing webhooks during development
+
+Testing webhooks locally during development requires making your local development server accessible to Cloudflare's webhook service. Here are several approaches:
+
+### Method 1: Using ngrok (Recommended)
+
+[ngrok](https://ngrok.com/) creates a secure tunnel to your local development server:
+
+1. **Install and setup ngrok:**
+   ```bash
+   # Install ngrok
+   npm install -g ngrok
+   # or download from https://ngrok.com/download
+   
+   # Start your local webhook server (example on port 3000)
+   node webhook-server.js
+   
+   # In another terminal, expose your local server
+   ngrok http 3000
+   ```
+
+2. **Register the ngrok URL with Cloudflare:**
+   ```bash
+   curl -X PUT --header 'Authorization: Bearer <API_TOKEN>' \
+   https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook \
+   --data '{"notificationUrl":"https://abc123.ngrok.io/webhook"}'
+   ```
+
+3. **Trigger a webhook by uploading a video:**
+   ```bash
+   curl -X POST \
+   https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream \
+   -H "Authorization: Bearer <API_TOKEN>" \
+   -F file=@test-video.mp4
+   ```
+
+:::note[Important]
+
+Webhooks are only sent **after** video processing is complete. For small test videos, this typically takes 30-60 seconds. Monitor your ngrok terminal or dashboard to see incoming requests.
+
+:::
+
+### Method 2: Using Cloudflare Tunnel (For custom domains)
+
+If you have DNS control over a domain in your Cloudflare account:
+
+1. **Install cloudflared:**
+   ```bash
+   # Follow installation guide at https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+   ```
+
+2. **Create a tunnel:**
+   ```bash
+   cloudflared tunnel create webhook-dev
+   cloudflared tunnel route dns webhook-dev webhook-dev.example.com
+   ```
+
+3. **Run the tunnel:**
+   ```bash
+   cloudflared tunnel run --hello-world webhook-dev
+   # Then update to point to your local server:
+   cloudflared tunnel --url http://localhost:3000 run webhook-dev
+   ```
+
+### Method 3: Using a test webhook service
+
+For quick testing without setting up local tunneling:
+
+1. **Use a webhook testing service like [webhook.site](https://webhook.site):**
+   - Visit webhook.site and copy your unique URL
+   - Register this URL with Cloudflare Stream webhooks
+   - Upload a video and view the webhook payload on webhook.site
+
+2. **Register the test URL:**
+   ```bash
+   curl -X PUT --header 'Authorization: Bearer <API_TOKEN>' \
+   https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook \
+   --data '{"notificationUrl":"https://webhook.site/unique-id"}'
+   ```
+
+### Troubleshooting webhook delivery
+
+If you're not receiving webhooks:
+
+1. **Verify your webhook URL is registered:**
+   ```bash
+   curl -X GET --header 'Authorization: Bearer <API_TOKEN>' \
+   https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/stream/webhook
+   ```
+
+2. **Check that your endpoint returns 2xx status codes:**
+   - Cloudflare expects successful webhook deliveries to return HTTP 200-299
+   - Failed deliveries (4xx, 5xx) may be retried with exponential backoff
+
+3. **Ensure your server accepts POST requests:**
+   - Webhooks are sent as POST requests with JSON payloads
+   - Verify your server handles the correct route and HTTP method
+
+4. **Test with a small video file:**
+   - Processing time varies with video size and complexity
+   - Use small test files (under 10MB) for faster feedback during development
+
+### Sample webhook handler
+
+Here's a basic webhook handler example:
+
+```javascript title="webhook-server.js"
+const express = require('express');
+const crypto = require('crypto');
+const app = express();
+
+app.use(express.json());
+
+const WEBHOOK_SECRET = 'your-webhook-secret-from-api-response';
+
+function verifyWebhookSignature(body, signature, secret) {
+  const [time, sig1] = signature.replace('time=', '').split(',sig1=');
+  const sourceString = `${time}.${JSON.stringify(body)}`;
+  const expectedSig = crypto.createHmac('sha256', secret).update(sourceString).digest('hex');
+  
+  return crypto.timingSafeEqual(Buffer.from(sig1), Buffer.from(expectedSig));
+}
+
+app.post('/webhook', (req, res) => {
+  try {
+    const signature = req.headers['webhook-signature'];
+    
+    if (signature && !verifyWebhookSignature(req.body, signature, WEBHOOK_SECRET)) {
+      return res.status(401).send('Invalid signature');
+    }
+    
+    console.log('Received webhook:', JSON.stringify(req.body, null, 2));
+    
+    const { uid, status, readyToStream } = req.body;
+    
+    if (status.state === 'ready' && readyToStream) {
+      console.log(`Video ${uid} is ready for streaming!`);
+      // Handle successful video processing
+    } else if (status.state === 'error') {
+      console.log(`Video ${uid} failed: ${status.errorReasonText}`);
+      // Handle processing error
+    }
+    
+    res.status(200).send('Webhook received');
+  } catch (error) {
+    console.error('Webhook handler error:', error);
+    res.status(500).send('Server error');
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Webhook server running on port ${PORT}`);
+});
+```
+
 ## Limitations
 
 * Webhooks will only be sent after video processing is complete, and the body will indicate whether the video processing succeeded or failed.
 * Only one webhook subscription is allowed per-account.
+* Webhook delivery uses a best-effort approach with automatic retries for failed deliveries.
+* Your webhook endpoint must respond with a 2xx HTTP status code within 10 seconds to be considered successful.
 
-## Examples
+## Code examples with error handling
 
-**Golang**
+### Node.js webhook handler with signature verification
 
-Using [crypto/hmac](https://golang.org/pkg/crypto/hmac/#pkg-overview):
+```javascript title="Complete Node.js webhook handler"
+const express = require('express');
+const crypto = require('crypto');
+const app = express();
 
-```go
+// Parse JSON bodies
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
+
+const WEBHOOK_SECRET = process.env.CLOUDFLARE_WEBHOOK_SECRET;
+const MAX_TIMESTAMP_AGE = 300; // 5 minutes
+
+function verifyWebhookSignature(rawBody, signature, secret) {
+  if (!signature) {
+    throw new Error('Missing Webhook-Signature header');
+  }
+  
+  try {
+    const sigParts = signature.split(',').reduce((acc, part) => {
+      const [key, value] = part.split('=');
+      acc[key] = value;
+      return acc;
+    }, {});
+    
+    const { time, sig1 } = sigParts;
+    
+    if (!time || !sig1) {
+      throw new Error('Invalid signature format');
+    }
+    
+    // Check timestamp age
+    const timestamp = parseInt(time);
+    const now = Math.floor(Date.now() / 1000);
+    if (now - timestamp > MAX_TIMESTAMP_AGE) {
+      throw new Error('Request timestamp too old');
+    }
+    
+    // Create expected signature
+    const sourceString = `${time}.${rawBody}`;
+    const expectedSig = crypto.createHmac('sha256', secret).update(sourceString).digest('hex');
+    
+    // Compare signatures using timing-safe comparison
+    if (!crypto.timingSafeEqual(Buffer.from(sig1), Buffer.from(expectedSig))) {
+      throw new Error('Signature verification failed');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Signature verification error:', error.message);
+    return false;
+  }
+}
+
+app.post('/webhook', (req, res) => {
+  try {
+    const signature = req.headers['webhook-signature'];
+    
+    // Verify signature if secret is configured
+    if (WEBHOOK_SECRET) {
+      if (!verifyWebhookSignature(req.rawBody, signature, WEBHOOK_SECRET)) {
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    } else {
+      console.warn('Webhook secret not configured - skipping signature verification');
+    }
+    
+    const webhookData = req.body;
+    console.log('Received webhook:', JSON.stringify(webhookData, null, 2));
+    
+    // Handle different webhook states
+    switch (webhookData.status.state) {
+      case 'ready':
+        if (webhookData.readyToStream && webhookData.status.pctComplete === '100') {
+          console.log(`✅ Video ${webhookData.uid} fully processed and ready`);
+          // Your logic for fully processed videos
+        } else if (webhookData.readyToStream) {
+          console.log(`⚠️  Video ${webhookData.uid} ready to stream but still processing`);
+          // Your logic for partially processed videos
+        }
+        break;
+        
+      case 'error':
+        console.error(`❌ Video ${webhookData.uid} failed: ${webhookData.status.errorReasonText}`);
+        // Your error handling logic
+        break;
+        
+      default:
+        console.log(`ℹ️  Video ${webhookData.uid} in state: ${webhookData.status.state}`);
+    }
+    
+    res.status(200).json({ received: true });
+    
+  } catch (error) {
+    console.error('Webhook handler error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Webhook server running on port ${PORT}`);
+  if (!WEBHOOK_SECRET) {
+    console.warn('⚠️  CLOUDFLARE_WEBHOOK_SECRET environment variable not set');
+  }
+});
+```
+
+### Go webhook handler
+
+```go title="Complete Go webhook handler"
 package main
 
 import (
- "crypto/hmac"
- "crypto/sha256"
- "encoding/hex"
- "log"
+    "crypto/hmac"
+    "crypto/sha256"
+    "crypto/subtle"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
+    "time"
 )
 
-func main() {
- secret := []byte("secret from the Cloudflare API")
- message := []byte("string from step 2")
-
- hash := hmac.New(sha256.New, secret)
- hash.Write(message)
-
- hashToCheck := hex.EncodeToString(hash.Sum(nil))
-
- log.Println(hashToCheck)
+type WebhookPayload struct {
+    UID           string `json:"uid"`
+    ReadyToStream bool   `json:"readyToStream"`
+    Status        struct {
+        State           string `json:"state"`
+        PctComplete     string `json:"pctComplete"`
+        ErrorReasonCode string `json:"errorReasonCode"`
+        ErrorReasonText string `json:"errorReasonText"`
+    } `json:"status"`
 }
 
+func verifySignature(body []byte, signature, secret string) error {
+    if signature == "" {
+        return fmt.Errorf("missing signature")
+    }
+    
+    parts := strings.Split(signature, ",")
+    sigData := make(map[string]string)
+    
+    for _, part := range parts {
+        kv := strings.SplitN(part, "=", 2)
+        if len(kv) == 2 {
+            sigData[kv[0]] = kv[1]
+        }
+    }
+    
+    timeStr, ok := sigData["time"]
+    if !ok {
+        return fmt.Errorf("missing time in signature")
+    }
+    
+    sig1, ok := sigData["sig1"]
+    if !ok {
+        return fmt.Errorf("missing sig1 in signature")
+    }
+    
+    // Check timestamp age
+    timestamp, err := strconv.ParseInt(timeStr, 10, 64)
+    if err != nil {
+        return fmt.Errorf("invalid timestamp: %v", err)
+    }
+    
+    if time.Now().Unix()-timestamp > 300 { // 5 minutes
+        return fmt.Errorf("request timestamp too old")
+    }
+    
+    // Create expected signature
+    sourceString := fmt.Sprintf("%s.%s", timeStr, string(body))
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write([]byte(sourceString))
+    expectedSig := hex.EncodeToString(mac.Sum(nil))
+    
+    // Compare signatures
+    if subtle.ConstantTimeCompare([]byte(sig1), []byte(expectedSig)) != 1 {
+        return fmt.Errorf("signature verification failed")
+    }
+    
+    return nil
+}
+
+func webhookHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    body, err := io.ReadAll(r.Body)
+    if err != nil {
+        log.Printf("Error reading request body: %v", err)
+        http.Error(w, "Bad request", http.StatusBadRequest)
+        return
+    }
+    defer r.Body.Close()
+    
+    secret := os.Getenv("CLOUDFLARE_WEBHOOK_SECRET")
+    if secret != "" {
+        signature := r.Header.Get("Webhook-Signature")
+        if err := verifySignature(body, signature, secret); err != nil {
+            log.Printf("Signature verification failed: %v", err)
+            http.Error(w, "Unauthorized", http.StatusUnauthorized)
+            return
+        }
+    } else {
+        log.Println("Warning: Webhook secret not configured")
+    }
+    
+    var payload WebhookPayload
+    if err := json.Unmarshal(body, &payload); err != nil {
+        log.Printf("Error parsing JSON: %v", err)
+        http.Error(w, "Bad request", http.StatusBadRequest)
+        return
+    }
+    
+    log.Printf("Received webhook for video %s", payload.UID)
+    
+    switch payload.Status.State {
+    case "ready":
+        if payload.ReadyToStream && payload.Status.PctComplete == "100" {
+            log.Printf("✅ Video %s fully processed and ready", payload.UID)
+            // Handle fully processed video
+        } else if payload.ReadyToStream {
+            log.Printf("⚠️  Video %s ready to stream but still processing", payload.UID)
+            // Handle partially processed video
+        }
+    case "error":
+        log.Printf("❌ Video %s failed: %s", payload.UID, payload.Status.ErrorReasonText)
+        // Handle error
+    default:
+        log.Printf("ℹ️  Video %s in state: %s", payload.UID, payload.Status.State)
+    }
+    
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(`{"received": true}`))
+}
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(`{"status": "ok"}`))
+}
+
+func main() {
+    http.HandleFunc("/webhook", webhookHandler)
+    http.HandleFunc("/health", healthHandler)
+    
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "3000"
+    }
+    
+    log.Printf("🚀 Webhook server starting on port %s", port)
+    if os.Getenv("CLOUDFLARE_WEBHOOK_SECRET") == "" {
+        log.Println("⚠️  CLOUDFLARE_WEBHOOK_SECRET environment variable not set")
+    }
+    
+    log.Fatal(http.ListenAndServe(":"+port, nil))
+}
 ```
 
-**Node.js**
+### Python webhook handler
 
-```js
+```python title="Complete Python webhook handler with Flask"
+import os
+import json
+import hmac
+import hashlib
+import time
+from flask import Flask, request, jsonify
 
-    var crypto = require('crypto');
+app = Flask(__name__)
 
-    var key = 'secret from the Cloudflare API';
-    var message = 'string from step 2';
+WEBHOOK_SECRET = os.getenv('CLOUDFLARE_WEBHOOK_SECRET')
+MAX_TIMESTAMP_AGE = 300  # 5 minutes
 
-    var hash = crypto.createHmac('sha256', key).update(message);
+def verify_signature(raw_body, signature, secret):
+    """Verify webhook signature"""
+    if not signature:
+        raise ValueError("Missing Webhook-Signature header")
+    
+    try:
+        # Parse signature components
+        sig_parts = {}
+        for part in signature.split(','):
+            key, value = part.split('=', 1)
+            sig_parts[key] = value
+        
+        timestamp = sig_parts.get('time')
+        sig1 = sig_parts.get('sig1')
+        
+        if not timestamp or not sig1:
+            raise ValueError("Invalid signature format")
+        
+        # Check timestamp age
+        if time.time() - int(timestamp) > MAX_TIMESTAMP_AGE:
+            raise ValueError("Request timestamp too old")
+        
+        # Create expected signature
+        source_string = f"{timestamp}.{raw_body}"
+        expected_sig = hmac.new(
+            secret.encode(),
+            source_string.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Compare signatures
+        if not hmac.compare_digest(sig1, expected_sig):
+            raise ValueError("Signature verification failed")
+        
+        return True
+        
+    except Exception as e:
+        app.logger.error(f"Signature verification error: {e}")
+        return False
 
-    hash.digest('hex');
-```
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    try:
+        # Get raw body for signature verification
+        raw_body = request.get_data(as_text=True)
+        signature = request.headers.get('Webhook-Signature')
+        
+        # Verify signature if secret is configured
+        if WEBHOOK_SECRET:
+            if not verify_signature(raw_body, signature, WEBHOOK_SECRET):
+                return jsonify({'error': 'Invalid signature'}), 401
+        else:
+            app.logger.warning("Webhook secret not configured - skipping verification")
+        
+        # Parse webhook data
+        webhook_data = request.get_json()
+        app.logger.info(f"Received webhook: {json.dumps(webhook_data, indent=2)}")
+        
+        # Handle different states
+        state = webhook_data['status']['state']
+        uid = webhook_data['uid']
+        
+        if state == 'ready':
+            if webhook_data['readyToStream'] and webhook_data['status']['pctComplete'] == '100':
+                app.logger.info(f"✅ Video {uid} fully processed and ready")
+                # Handle fully processed video
+            elif webhook_data['readyToStream']:
+                app.logger.info(f"⚠️  Video {uid} ready to stream but still processing")
+                # Handle partially processed video
+        elif state == 'error':
+            error_text = webhook_data['status']['errorReasonText']
+            app.logger.error(f"❌ Video {uid} failed: {error_text}")
+            # Handle error
+        else:
+            app.logger.info(f"ℹ️  Video {uid} in state: {state}")
+        
+        return jsonify({'received': True})
+        
+    except Exception as e:
+        app.logger.error(f"Webhook handler error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
-**Ruby**
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'ok',
+        'timestamp': time.time()
+    })
 
-```ruby
-    require 'openssl'
-
-    key = 'secret from the Cloudflare API'
-    message = 'string from step 2'
-
-    OpenSSL::HMAC.hexdigest('sha256', key, message)
-```
-
-**In JavaScript (for example, to use in Cloudflare Workers)**
-
-```javascript
-    const key = 'secret from the Cloudflare API';
-    const message = 'string from step 2';
-
-    const getUtf8Bytes = str =>
-      new Uint8Array(
-        [...decodeURIComponent(encodeURIComponent(str))].map(c => c.charCodeAt(0))
-      );
-
-    const keyBytes = getUtf8Bytes(key);
-    const messageBytes = getUtf8Bytes(message);
-
-    const cryptoKey = await crypto.subtle.importKey(
-      'raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' },
-      true, ['sign']
-    );
-    const sig = await crypto.subtle.sign('HMAC', cryptoKey, messageBytes);
-
-    [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 3000))
+    print(f"🚀 Webhook server starting on port {port}")
+    
+    if not WEBHOOK_SECRET:
+        print("⚠️  CLOUDFLARE_WEBHOOK_SECRET environment variable not set")
+    
+    app.run(host='0.0.0.0', port=port, debug=False)
 ```

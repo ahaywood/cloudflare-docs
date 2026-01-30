@@ -203,4 +203,185 @@ As you have direct access to your Worker entry file (`workers/app.ts`), you can 
 
 </Details>
 
+## Use middleware with React Router
+
+[React Router middleware](https://reactrouter.com/how-to/middleware#middleware) allows you to intercept and modify requests before they reach your routes. This is useful for tasks like authentication, logging, setting response headers, or accessing Cloudflare bindings to enrich request context.
+
+To use middleware with React Router on Cloudflare Workers, you need to pass it through the request handler's context in your Worker entry file.
+
+<Details header="Example: Setting up middleware">
+
+Here's how to configure middleware in your `workers/app.ts` file:
+
+```ts title="workers/app.ts"
+import { createRequestHandler } from "react-router";
+
+declare global {
+	interface CloudflareEnvironment extends Env {}
+}
+
+type Env = {
+	// Your bindings here
+};
+
+const requestHandler = createRequestHandler(
+	() => import("virtual:react-router/server-build"),
+	import.meta.env.MODE
+);
+
+export default {
+	async fetch(request, env, ctx) {
+		return requestHandler(request, {
+			cloudflare: { env, ctx },
+			// Pass middleware through context
+			middleware: async (context) => {
+				// Your middleware logic here
+				console.log(`Request to: ${new URL(context.request.url).pathname}`);
+			},
+		});
+	},
+} satisfies ExportedHandler<CloudflareEnvironment>;
+```
+
+The middleware function receives a `context` object that includes:
+- `request`: The incoming request
+- `params`: Route parameters
+- `context`: The context object (including `cloudflare.env` and `cloudflare.ctx`)
+
+</Details>
+
+<Details header="Example: Authentication middleware">
+
+Here's a practical example of authentication middleware that checks for a valid session token using a KV namespace:
+
+```ts title="workers/app.ts"
+import { createRequestHandler } from "react-router";
+
+declare global {
+	interface CloudflareEnvironment extends Env {}
+}
+
+type Env = {
+	SESSIONS: KVNamespace;
+};
+
+const requestHandler = createRequestHandler(
+	() => import("virtual:react-router/server-build"),
+	import.meta.env.MODE
+);
+
+export default {
+	async fetch(request, env, ctx) {
+		return requestHandler(request, {
+			cloudflare: { env, ctx },
+			middleware: async (context) => {
+				const url = new URL(context.request.url);
+
+				// Skip auth for public routes
+				if (url.pathname.startsWith("/public") || url.pathname === "/login") {
+					return;
+				}
+
+				// Check for session token
+				const token = context.request.headers.get("Authorization")?.replace("Bearer ", "");
+
+				if (!token) {
+					throw new Response("Unauthorized", { status: 401 });
+				}
+
+				// Verify token using KV
+				const session = await context.context.cloudflare.env.SESSIONS.get(token);
+
+				if (!session) {
+					throw new Response("Invalid session", { status: 401 });
+				}
+
+				// Add user data to context for use in loaders/actions
+				context.context.user = JSON.parse(session);
+			},
+		});
+	},
+} satisfies ExportedHandler<CloudflareEnvironment>;
+```
+
+You can then access the user data in your route loaders and actions:
+
+```ts title="app/routes/dashboard.tsx"
+export function loader({ context }: Route.LoaderArgs) {
+	// Access user data set by middleware
+	const user = context.user;
+	return { user };
+}
+
+export default function Dashboard({ loaderData }: Route.ComponentProps) {
+	return (
+		<div>
+			<h1>Welcome, {loaderData.user.name}!</h1>
+		</div>
+	);
+}
+```
+
+</Details>
+
+<Details header="Example: Request logging middleware">
+
+Here's an example that logs request details and timing using Cloudflare's Analytics Engine:
+
+```ts title="workers/app.ts"
+import { createRequestHandler } from "react-router";
+
+declare global {
+	interface CloudflareEnvironment extends Env {}
+}
+
+type Env = {
+	ANALYTICS: AnalyticsEngineDataset;
+};
+
+const requestHandler = createRequestHandler(
+	() => import("virtual:react-router/server-build"),
+	import.meta.env.MODE
+);
+
+export default {
+	async fetch(request, env, ctx) {
+		const startTime = Date.now();
+
+		const response = await requestHandler(request, {
+			cloudflare: { env, ctx },
+			middleware: async (context) => {
+				// Add request metadata to context
+				context.context.requestStartTime = startTime;
+				context.context.requestId = crypto.randomUUID();
+
+				// Log request to Analytics Engine
+				ctx.waitUntil(
+					env.ANALYTICS.writeDataPoint({
+						blobs: [
+							context.context.requestId,
+							new URL(context.request.url).pathname,
+							context.request.method,
+						],
+						doubles: [startTime],
+					})
+				);
+			},
+		});
+
+		// Log response details
+		const duration = Date.now() - startTime;
+		console.log(`Request completed in ${duration}ms`);
+
+		return response;
+	},
+} satisfies ExportedHandler<CloudflareEnvironment>;
+```
+
+</Details>
+
+:::note
+Middleware runs before your route loaders and actions, making it ideal for cross-cutting concerns like authentication, logging, and request enrichment. Any data you add to the `context` object in middleware will be available in all your route loaders and actions.
+:::
+
 <Render file="frameworks-bindings" product="workers" />

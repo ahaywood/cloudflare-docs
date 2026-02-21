@@ -32,6 +32,26 @@ paths:
           schema:
             type: string
           description: Associate session to an user-provided correlation id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewSessionRequest"
+            examples:
+              with_session_description:
+                description: Create a new session with an initial sessionDescription
+                value:
+                  sessionDescription:
+                    sdp: |
+                      v=0
+                      o=- 0 0 IN IP4 127.0.0.1
+                      s=-
+                      c=IN IP4 127.0.0.1
+                      t=0 0
+                      m=audio 4000 RTP/AVP 111
+                      a=rtpmap:111 OPUS/48000/2
+                      ...
+                    type: offer
       responses:
         "201":
           description: Created
@@ -108,12 +128,13 @@ paths:
                       bidirectionalMediaStream: true
                       kind: "audio"
               push_track_without_an_offer:
-                description: SFU can generate an offer to push a local track
+                description: SFU can generate an offer to push a local track. Note that bidirectionalMediaStream is required when the SFU generates the offer for pushing a local track.
                 value:
                   tracks:
                     - location: local
                       trackName: mic-1
                       kind: "audio"
+                      bidirectionalMediaStream: true
               push_tracks_with_autodiscover:
                 description: SFU detects any new track in the offered SDP
                 value:

@@ -1,8 +1,11 @@
 ---
 title: getCurrentAgent()
+description: Access the current Agent context from external utility functions using getCurrentAgent() in the Agents SDK.
 pcx_content_type: concept
 sidebar:
   order: 17
+products:
+  - agents
 ---
 
 import { TypeScriptExample, LinkCard } from "~/components";
@@ -82,7 +85,7 @@ export class MyAgent extends AIChatAgent {
 
 ### Built-in vs custom methods
 
-- **Built-in methods** (`onRequest`, `onEmail`, `onStateUpdate`): Already have context.
+- **Built-in methods** (`onRequest`, `onEmail`, `onStateChanged`): Already have context.
 - **Custom methods** (your methods): Automatically wrapped during initialization.
 - **External functions**: Access context through `getCurrentAgent()`.
 

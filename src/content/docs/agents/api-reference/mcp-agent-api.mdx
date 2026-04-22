@@ -1,10 +1,13 @@
 ---
 pcx_content_type: reference
 title: McpAgent
+description: Build stateful MCP servers on Cloudflare by extending the McpAgent class with persistent storage and agent capabilities.
 tags:
   - MCP
 sidebar:
   order: 12
+products:
+  - agents
 ---
 
 import { TypeScriptExample, LinkCard } from "~/components";
@@ -55,7 +58,7 @@ You can use the APIs below in order to do so.
 | `state`                         | Current state object (persisted)                   |
 | `initialState`                  | Default state when instance starts                 |
 | `setState(state)`               | Update and persist state                           |
-| `onStateChanged(state)`          | Called when state changes                          |
+| `onStateChanged(state)`         | Called when state changes                          |
 | `sql`                           | Execute SQL queries on embedded database           |
 | `server`                        | The `McpServer` instance for registering tools     |
 | `props`                         | User identity and tokens from OAuth authentication |
@@ -149,7 +152,7 @@ Available jurisdictions include `"eu"` (European Union) and `"fedramp"` (FedRAMP
 
 ## Hibernation support
 
-`McpAgent` instances automatically support [WebSockets Hibernation](/durable-objects/best-practices/websockets/#websocket-hibernation-api), allowing stateful MCP servers to sleep during inactive periods while preserving their state. This means your agents only consume compute resources when actively processing requests, optimizing costs while maintaining the full context and conversation history.
+`McpAgent` instances automatically support [WebSockets Hibernation](/durable-objects/best-practices/websockets/#durable-objects-hibernation-websocket-api), allowing stateful MCP servers to sleep during inactive periods while preserving their state. This means your agents only consume compute resources when actively processing requests, optimizing costs while maintaining the full context and conversation history.
 
 Hibernation is enabled by default and requires no additional configuration.
 

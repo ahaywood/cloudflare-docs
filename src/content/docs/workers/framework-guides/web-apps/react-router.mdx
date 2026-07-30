@@ -222,4 +222,304 @@ As you have direct access to your Worker entry file (`workers/app.ts`), you can 
 
 </Details>
 
+## Using React Router middleware
+
+[React Router v7 middleware](https://reactrouter.com/how-to/middleware) enables you to run code before and after route handlers, providing a powerful way to implement cross-cutting concerns like authentication, logging, and request processing.
+
+### Enable middleware
+
+First, enable middleware in your React Router config:
+
+```ts title="react-router.config.ts"
+import type { Config } from "@react-router/dev/config";
+
+export default {
+  future: {
+    v8_middleware: true,
+  },
+} satisfies Config;
+```
+
+### Create type-safe contexts
+
+Use React Router's `createContext` to define type-safe contexts for sharing data between middleware and route handlers:
+
+```ts title="app/context.ts"
+import { createContext } from "react-router";
+
+export interface User {
+  id: string;
+  email: string;
+  role: string;
+}
+
+export const userContext = createContext<User | null>(null);
+export const requestIdContext = createContext<string>("");
+```
+
+### Update your Worker entry point
+
+When using middleware, update your `workers/app.ts` to handle the new context system:
+
+```ts title="workers/app.ts"
+import { createRequestHandler } from "react-router";
+import {
+  createContext,
+  RouterContextProvider,
+} from "react-router";
+
+// Define contexts for your Cloudflare resources
+const cfEnvContext = createContext<Env>();
+
+declare global {
+  interface CloudflareEnvironment extends Env {}
+}
+
+type Env = {
+  // Your bindings here
+  DB: D1Database;
+  KV: KVNamespace;
+};
+
+const requestHandler = createRequestHandler(
+  () => import("virtual:react-router/server-build"),
+  import.meta.env.MODE,
+);
+
+export default {
+  async fetch(request, env, ctx) {
+    // Create a context provider and set Cloudflare resources
+    const context = new RouterContextProvider();
+    context.set(cfEnvContext, env);
+
+    return requestHandler(request, {
+      cloudflare: { env, ctx, context },
+    });
+  },
+} satisfies ExportedHandler<CloudflareEnvironment>;
+```
+
+### Implement middleware in routes
+
+Add middleware to your route modules to handle authentication, logging, or other cross-cutting concerns:
+
+```ts title="app/routes/dashboard.tsx"
+import { redirect } from "react-router";
+import { userContext, requestIdContext } from "~/context";
+
+// Authentication middleware
+async function authMiddleware({ request, context }: Route.MiddlewareArgs) {
+  const sessionCookie = request.headers.get("Cookie");
+  
+  try {
+    const user = await validateSession(sessionCookie);
+    if (!user) {
+      throw redirect("/login");
+    }
+    context.set(userContext, user);
+  } catch (error) {
+    console.error("Authentication failed:", error);
+    throw redirect("/login");
+  }
+}
+
+// Request logging middleware
+async function loggingMiddleware(
+  { request, context }: Route.MiddlewareArgs,
+  next: () => Promise<Response>
+) {
+  const requestId = crypto.randomUUID();
+  context.set(requestIdContext, requestId);
+
+  const start = Date.now();
+  console.log(`[${requestId}] ${request.method} ${request.url}`);
+
+  try {
+    const response = await next();
+    const duration = Date.now() - start;
+    console.log(`[${requestId}] ${response.status} (${duration}ms)`);
+    return response;
+  } catch (error) {
+    const duration = Date.now() - start;
+    console.error(`[${requestId}] Error (${duration}ms):`, error);
+    throw error;
+  }
+}
+
+export const middleware: Route.MiddlewareFunction[] = [
+  loggingMiddleware,
+  authMiddleware,
+];
+
+export async function loader({ context }: Route.LoaderArgs) {
+  // Access authenticated user and request ID from context
+  const user = context.get(userContext);
+  const requestId = context.get(requestIdContext);
+
+  // Use Cloudflare bindings from context
+  const { env } = context.cloudflare;
+  const userData = await env.DB
+    .prepare("SELECT * FROM user_data WHERE user_id = ?")
+    .bind(user!.id)
+    .first();
+
+  return { user, userData, requestId };
+}
+
+export default function Dashboard({ loaderData }: Route.ComponentProps) {
+  return (
+    <div>
+      <h1>Welcome {loaderData.user.email}!</h1>
+      <p>Request ID: {loaderData.requestId}</p>
+      <pre>{JSON.stringify(loaderData.userData, null, 2)}</pre>
+    </div>
+  );
+}
+```
+
+### Common middleware patterns
+
+#### Rate limiting with Cloudflare bindings
+
+```ts title="app/middleware/rate-limit.ts"
+import { createContext } from "react-router";
+
+const rateLimitContext = createContext<boolean>(false);
+
+export async function rateLimitMiddleware({
+  request,
+  context,
+}: Route.MiddlewareArgs) {
+  const { env } = context.cloudflare;
+  const clientIP = request.headers.get("CF-Connecting-IP") || "unknown";
+  const key = `rate_limit:${clientIP}`;
+
+  try {
+    const current = await env.KV.get(key);
+    const requests = current ? parseInt(current) : 0;
+
+    if (requests >= 100) { // 100 requests per minute
+      throw new Response("Rate limit exceeded", { status: 429 });
+    }
+
+    await env.KV.put(key, (requests + 1).toString(), { expirationTtl: 60 });
+    context.set(rateLimitContext, true);
+  } catch (error) {
+    console.error("Rate limiting error:", error);
+    // Continue without rate limiting on error
+    context.set(rateLimitContext, false);
+  }
+}
+```
+
+#### CORS headers
+
+```ts title="app/middleware/cors.ts"
+export async function corsMiddleware(
+  { request }: Route.MiddlewareArgs,
+  next: () => Promise<Response>
+) {
+  const response = await next();
+
+  // Add CORS headers
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, OPTIONS"
+  );
+  response.headers.set(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+
+  // Handle preflight requests
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: response.headers });
+  }
+
+  return response;
+}
+```
+
+#### Security headers
+
+```ts title="app/middleware/security.ts"
+export async function securityMiddleware(
+  args: Route.MiddlewareArgs,
+  next: () => Promise<Response>
+) {
+  const response = await next();
+
+  // Add security headers
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-XSS-Protection", "1; mode=block");
+  response.headers.set(
+    "Strict-Transport-Security",
+    "max-age=31536000; includeSubDomains"
+  );
+  response.headers.set(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'"
+  );
+
+  return response;
+}
+```
+
+### Error handling in middleware
+
+Always implement proper error handling in your middleware to ensure graceful degradation:
+
+```ts title="app/middleware/with-error-handling.ts"
+export function withErrorHandling(
+  middleware: Route.MiddlewareFunction
+): Route.MiddlewareFunction {
+  return async (args, next) => {
+    try {
+      return await middleware(args, next);
+    } catch (error) {
+      console.error("Middleware error:", error);
+      
+      // Log to Cloudflare Analytics or external service
+      const { env } = args.context.cloudflare;
+      // await logError(env, error);
+      
+      // Re-throw to let React Router handle the error boundary
+      throw error;
+    }
+  };
+}
+
+// Usage
+export const middleware: Route.MiddlewareFunction[] = [
+  withErrorHandling(authMiddleware),
+  withErrorHandling(loggingMiddleware),
+];
+```
+
+### Client-side middleware
+
+You can also define client-side middleware that runs in the browser:
+
+```ts title="app/routes/dashboard.tsx"
+async function clientTimingMiddleware(
+  { request }: Route.ClientMiddlewareArgs,
+  next: () => Promise<any>
+) {
+  const start = performance.now();
+  const result = await next();
+  const duration = performance.now() - start;
+  
+  console.log(`Client navigation took ${duration}ms`);
+  return result;
+}
+
+export const clientMiddleware: Route.ClientMiddlewareFunction[] = [
+  clientTimingMiddleware,
+];
+```
+
+For more detailed information about React Router middleware, see the [official middleware documentation](https://reactrouter.com/how-to/middleware).
+
 <Render file="frameworks-bindings" product="workers" />
